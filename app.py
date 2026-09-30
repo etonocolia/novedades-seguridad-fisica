@@ -462,7 +462,6 @@ with operations_tab:
             lat="latitude",
             lon="longitude",
             size="Paradas",
-            color="Paradas",
             hover_name="site",
             hover_data={"Paradas": True, "latitude": ":.5f", "longitude": ":.5f"},
             map_style="open-street-map",
@@ -471,9 +470,10 @@ with operations_tab:
                 "lon": float(map_sites["longitude"].median()),
             },
             zoom=9,
-            size_max=26,
+            size_max=40,
             labels={"Paradas": "Paradas no autorizadas"},
         )
+        map_figure.update_traces(marker={"color": "#f05a28", "opacity": 0.88})
         map_figure.update_layout(height=500, margin={"l": 0, "r": 0, "t": 10, "b": 0})
         show_chart(map_figure)
 
