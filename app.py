@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 import unicodedata
@@ -190,14 +190,41 @@ def add_alerts(frame: pd.DataFrame, repeat_threshold: int) -> pd.DataFrame:
 
 def apply_filters(
     frame: pd.DataFrame,
-    date_range: tuple[date, date],
+    date_range: object,
     tractor: str,
     storage: str,
     site_query: str,
+    description: str | None,
 ) -> pd.DataFrame:
     """Aplica filtros operativos sin modificar el conjunto de origen."""
-    start, end = date_range
-    filtered = frame.loc[frame["date"].dt.date.between(start, end)].copy()
+    available_start = frame["date"].min().date()
+    available_end = frame["date"].max().date()
+
+    def collect_dates(value: object) -> list[date]:
+        if isinstance(value, datetime):
+            return [value.date()]
+        if isinstance(value, date):
+            return [value]
+        if isinstance(value, (tuple, list)):
+            return [item for nested in value for item in collect_dates(nested)]
+        return []
+
+    selected_dates = collect_dates(date_range)
+    if not selected_dates:
+        start, end = available_start, available_end
+    elif len(selected_dates) == 1:
+        start = end = selected_dates[0]
+    else:
+        start, end = selected_dates[0], selected_dates[-1]
+        if start > end:
+            start, end = end, start
+        start = min(max(start, available_start), available_end)
+        end = min(max(end, available_start), available_end)
+
+    date_values = frame["date"].dt.normalize()
+    filtered = frame.loc[
+        date_values.between(pd.Timestamp(start), pd.Timestamp(end))
+    ].copy()
     if tractor != "Todas":
         filtered = filtered.loc[filtered["tractor"] == tractor]
     if storage != "Todas":
@@ -206,6 +233,8 @@ def apply_filters(
         filtered = filtered.loc[
             filtered["site"].fillna("").str.contains(site_query.strip(), case=False, regex=False)
         ]
+    if description is not None:
+        filtered = filtered.loc[filtered["description"] == description]
     return filtered
 
 
@@ -258,27 +287,34 @@ with st.sidebar:
         min_value=minimum_date,
         max_value=maximum_date,
     )
-    if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
-        date_range = (selected_dates[0], selected_dates[1])
-    elif isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 1:
-        date_range = (selected_dates[0], selected_dates[0])
-    elif isinstance(selected_dates, (tuple, list)) or selected_dates is None:
-        date_range = (minimum_date, maximum_date)
-    else:
-        date_range = (selected_dates, selected_dates)
+    date_range = selected_dates
 
     tractor_options = ["Todas"] + sorted(stops["tractor"].dropna().unique().tolist())
     storage_options = ["Todas"] + sorted(stops["storage"].dropna().unique().tolist())
+    description_options = sorted(
+        stops["description"].dropna().unique().tolist(),
+        key=str.casefold,
+    )
     selected_tractor = st.selectbox("Placa medio propulsor", tractor_options)
     selected_storage = st.selectbox("Placa medio almacenador", storage_options)
     site_query = st.text_input("Buscar sitio")
+    selected_description = st.selectbox(
+        "Descripción del evento",
+        options=[None, *description_options],
+        format_func=lambda value: "Todas" if value is None else value,
+        help="Selecciona una descripción para ver solo los eventos con ese valor exacto.",
+    )
     repeat_threshold = st.number_input(
         "Eventos para marcar recurrencia",
         min_value=2,
         max_value=50,
         value=5,
         step=1,
-        help="Umbral configurable para priorizar placas repetidas en el periodo filtrado.",
+        help=(
+            "Cantidad mínima de eventos de parada asociados a una misma placa propulsora "
+            "o almacenadora dentro del periodo y los demás filtros activos. Al alcanzarla, "
+            "se marca recurrencia para revisión; no es una prueba de pérdida."
+        ),
     )
 
 filtered = apply_filters(
@@ -287,6 +323,7 @@ filtered = apply_filters(
     selected_tractor,
     selected_storage,
     site_query,
+    selected_description,
 )
 filtered = add_alerts(filtered, int(repeat_threshold))
 
@@ -329,21 +366,21 @@ with management_tab:
         .rename_axis("Hora")
         .reset_index(name="Paradas")
     )
-    asset_counts = (
-        filtered["storage"]
+    tractor_counts = (
+        filtered["tractor"]
         .value_counts()
         .head(10)
         .rename_axis("Placa")
         .reset_index(name="Eventos")
     )
-    top_storage_share = (
-        float(asset_counts.iloc[0]["Eventos"]) / len(filtered) * 100
-        if not asset_counts.empty
+    top_tractor_share = (
+        float(tractor_counts.iloc[0]["Eventos"]) / len(filtered) * 100
+        if not tractor_counts.empty
         else 0.0
     )
     top_columns = st.columns(2)
     with top_columns[0]:
-        st.metric("Participación de la placa almacenadora más frecuente", f"{top_storage_share:.1f}%")
+        st.metric("Participación de la placa propulsora más frecuente", f"{top_tractor_share:.1f}%")
         st.caption("Concentración de registros, no tasa de riesgo por viaje.")
     with top_columns[1]:
         st.metric("Eventos con alguna señal", f"{int(filtered['alert_points'].gt(0).sum()):,}")
@@ -374,19 +411,19 @@ with management_tab:
                 px.bar(top_sites.sort_values("Eventos"), x="Eventos", y="Sitio", orientation="h")
             )
     with chart_columns[1]:
-        st.subheader("Placas almacenadoras con más registros")
-        if not asset_counts.empty:
+        st.subheader("Placas propulsoras con más novedades")
+        if not tractor_counts.empty:
             show_chart(
-                px.bar(asset_counts.sort_values("Eventos"), x="Eventos", y="Placa", orientation="h")
+                px.bar(tractor_counts.sort_values("Eventos"), x="Eventos", y="Placa", orientation="h")
             )
 
     context_summary = pd.DataFrame(
         {
             "Hoja de contexto": list(contexts),
-            "Registros disponibles": [len(context) for context in contexts.values()],
+            "Novedades": [len(context) for context in contexts.values()],
         }
     )
-    st.subheader("Hojas complementarias")
+    st.subheader("Otras novedades")
     st.dataframe(context_summary, hide_index=True)
 
 with operations_tab:
