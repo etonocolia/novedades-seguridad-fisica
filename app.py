@@ -411,7 +411,7 @@ with management_tab:
                 px.bar(top_sites.sort_values("Eventos"), x="Eventos", y="Sitio", orientation="h")
             )
     with chart_columns[1]:
-        st.subheader("Placas propulsoras con más novedades")
+        st.subheader("Placas con más novedades")
         if not tractor_counts.empty:
             show_chart(
                 px.bar(tractor_counts.sort_values("Eventos"), x="Eventos", y="Placa", orientation="h")
